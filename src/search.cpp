@@ -385,6 +385,10 @@ void Search::Worker::iterative_deepening() {
                 Depth adjustedDepth =
                   std::max(1, rootDepth - failedHighCnt - 3 * (searchAgainCounter + 1) / 4);
 
+                // In SeekStalemate mode extend search in endgames to see stalemate deeper.
+                if (seekStalemate && rootPos.count<ALL_PIECES>() <= 8)
+                    adjustedDepth = std::min(adjustedDepth + 1, MAX_PLY - 1);
+
                 rootDelta = beta - alpha;
                 bestValue = search<Root>(rootPos, ss, alpha, beta, adjustedDepth, false);
 
@@ -1215,10 +1219,20 @@ moves_loop:  // When in check, search starts here
         int stalemateBonus = 0;
         int opponentMoves  = -1;
 
-        if (seekStalemate && rootNode && moveCount == 1)
+        // In SeekStalemate mode, bias moves that restrict the opponent's mobility.
+        // Only count at engine-move plies (pos.side_to_move() == opponent of root) to
+        // avoid counting the wrong side's moves. Limit to ply <= 2 for performance.
+        if (seekStalemate && ss->ply <= 2
+            && pos.side_to_move() != rootPos.side_to_move())
         {
-            opponentMoves  = count_legal_moves(pos);
-            stalemateBonus = 20 - std::min(opponentMoves, 20);
+            opponentMoves = count_legal_moves(pos);
+            // Scale bonus slightly higher at root (ply 0) where the choice matters most.
+            int scale      = (ss->ply == 0) ? 2 : 1;
+            stalemateBonus = (20 - std::min(opponentMoves, 20)) * scale;
+
+            // Penalize check-giving moves — checks steer toward mate, not stalemate.
+            if (givesCheck)
+                stalemateBonus -= 400;
         }
 
         // Add extension to new depth
@@ -1336,7 +1350,8 @@ moves_loop:  // When in check, search starts here
             value = std::clamp(value + stalemateBonus, VALUE_TB_LOSS_IN_MAX_PLY + 1,
                                VALUE_TB_WIN_IN_MAX_PLY - 1);
 
-        if (rootNode && is_mainthread() && seekStalemate && moveCount == 1)
+        if (rootNode && is_mainthread() && seekStalemate && opponentMoves >= 0
+            && moveCount == 1)
             sync_cout << "info string Opponent legal moves: "
                       << (opponentMoves >= 0 ? std::to_string(opponentMoves) : "n/a") << sync_endl;
 

@@ -113,6 +113,20 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
         // Blocked enemy pawns reduce legal replies and increase stalemate likelihood.
         stalemateBonus += blockedEnemyPawns * 45;
 
+        // Reward enemy non-pawn pieces whose mobility is severely restricted.
+        // Immobile pieces cannot escape a stalemate net.
+        for (PieceType pt : {KNIGHT, BISHOP, ROOK, QUEEN})
+        {
+            Bitboard pieces = pos.pieces(them, pt);
+            while (pieces)
+            {
+                Square   s     = pop_lsb(pieces);
+                Bitboard moves = attacks_bb(pt, s, pos.pieces()) & ~pos.pieces(them);
+                if (popcount(moves) <= 2)
+                    stalemateBonus += 35;
+            }
+        }
+
         // With a large material lead, mildly discourage further piece liquidation.
         if (materialLead > PawnValue * 4 && usPieces > themPieces)
             stalemateBonus -= (usPieces - themPieces) * 25;
