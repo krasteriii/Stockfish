@@ -293,4 +293,6 @@ Move* generate<LEGAL>(const Position& pos, Move* moveList) {
     return moveList;
 }
 
+int count_legal_moves(const Position& pos) { return int(MoveList<LEGAL>(pos).size()); }
+
 }  // namespace Stockfish

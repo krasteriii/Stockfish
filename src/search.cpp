@@ -141,6 +141,13 @@ void update_all_stats(const Position& pos,
                       Depth           depth,
                       Move            ttMove);
 
+Value seek_stalemate_terminal_value(const Position& pos, const Position& rootPos) {
+    if (!pos.checkers() && pos.side_to_move() != rootPos.side_to_move())
+        return -VALUE_TB_WIN_IN_MAX_PLY;
+
+    return VALUE_DRAW;
+}
+
 bool is_shuffling(Move move, Stack* const ss, const Position& pos) {
     if (pos.capture_stage(move) || pos.rule50_count() < 11)
         return false;
@@ -295,6 +302,9 @@ void Search::Worker::iterative_deepening() {
 
     if (mainThread)
     {
+        if (options["SeekStalemate"])
+            sync_cout << "info string SeekStalemate mode active" << sync_endl;
+
         if (mainThread->bestPreviousScore == VALUE_INFINITE)
             mainThread->iterValue.fill(VALUE_ZERO);
         else
@@ -372,6 +382,7 @@ void Search::Worker::iterative_deepening() {
                 // effective increment for every four searchAgain steps (see issue #2717).
                 Depth adjustedDepth =
                   std::max(1, rootDepth - failedHighCnt - 3 * (searchAgainCounter + 1) / 4);
+
                 rootDelta = beta - alpha;
                 bestValue = search<Root>(rootPos, ss, alpha, beta, adjustedDepth, false);
 
@@ -1199,6 +1210,14 @@ moves_loop:  // When in check, search starts here
 
         // Step 16. Make the move
         do_move(pos, move, st, givesCheck, ss);
+        int stalemateBonus = 0;
+        int opponentMoves  = -1;
+
+        if (options["SeekStalemate"] && rootNode)
+        {
+            opponentMoves  = count_legal_moves(pos);
+            stalemateBonus = 20 - std::min(opponentMoves, 20);
+        }
 
         // Add extension to new depth
         newDepth += extension;
@@ -1310,6 +1329,14 @@ moves_loop:  // When in check, search starts here
         undo_move(pos, move);
 
         assert(value > -VALUE_INFINITE && value < VALUE_INFINITE);
+
+        if (options["SeekStalemate"] && !is_decisive(value))
+            value = std::clamp(value + stalemateBonus, VALUE_TB_LOSS_IN_MAX_PLY + 1,
+                               VALUE_TB_WIN_IN_MAX_PLY - 1);
+
+        if (rootNode && is_mainthread() && options["SeekStalemate"] && moveCount == 1)
+            sync_cout << "info string Opponent legal moves: "
+                      << (opponentMoves >= 0 ? std::to_string(opponentMoves) : "n/a") << sync_endl;
 
         // Step 20. Check for a new best move
         // Finished searching the move. If a stop occurred, the return value of
@@ -1425,7 +1452,10 @@ moves_loop:  // When in check, search starts here
         bestValue = (bestValue * depth + beta) / (depth + 1);
 
     if (!moveCount)
-        bestValue = excludedMove ? alpha : ss->inCheck ? mated_in(ss->ply) : VALUE_DRAW;
+        bestValue = excludedMove                                    ? alpha
+                  : ss->inCheck                                    ? mated_in(ss->ply)
+                  : options["SeekStalemate"] ? seek_stalemate_terminal_value(pos, rootPos)
+                                             : VALUE_DRAW;
 
     // If there is a move that produces search value greater than alpha,
     // we update the stats of searched moves.
@@ -1734,7 +1764,8 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
         {
             pos.state()->checkersBB = Rank1BB;  // search for legal king-moves only
             if (!MoveList<LEGAL>(pos).size())   // stalemate
-                bestValue = VALUE_DRAW;
+                bestValue = options["SeekStalemate"] ? seek_stalemate_terminal_value(pos, rootPos)
+                                                     : VALUE_DRAW;
             pos.state()->checkersBB = 0;
         }
     }
@@ -1771,7 +1802,7 @@ TimePoint Search::Worker::elapsed_time() const { return main_manager()->tm.elaps
 
 Value Search::Worker::evaluate(const Position& pos) {
     return Eval::evaluate(networks[numaAccessToken], pos, accumulatorStack, refreshTable,
-                          optimism[pos.side_to_move()]);
+                          optimism[pos.side_to_move()], options["SeekStalemate"]);
 }
 
 namespace {

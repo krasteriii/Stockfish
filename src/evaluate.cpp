@@ -54,7 +54,8 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
                      const Position&                pos,
                      Eval::NNUE::AccumulatorStack&  accumulators,
                      Eval::NNUE::AccumulatorCaches& caches,
-                     int                            optimism) {
+                     int                            optimism,
+                     bool                           seekStalemate) {
 
     assert(!pos.checkers());
 
@@ -79,6 +80,35 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
 
     int material = 534 * pos.count<PAWN>() + pos.non_pawn_material();
     int v        = (nnue * (77871 + material) + optimism * (7191 + material)) / 77871;
+
+    if (seekStalemate)
+    {
+        const Color us         = pos.side_to_move();
+        const Color them       = ~us;
+        const int   usPieces   = pos.count<ALL_PIECES>(us);
+        const int   themPieces = pos.count<ALL_PIECES>(them);
+        const int   materialLead = simple_eval(pos);
+
+        int stalemateBonus = 0;
+
+        Square enemyKing = pos.square<KING>(them);
+        int    edgeDist  = std::min(std::min(int(file_of(enemyKing)), int(FILE_H - file_of(enemyKing))),
+                                   std::min(int(rank_of(enemyKing)), int(RANK_8 - rank_of(enemyKing))));
+        stalemateBonus += (3 - std::min(edgeDist, 3)) * 90;
+
+        Bitboard enemyPawnPushTargets = them == WHITE ? shift<NORTH>(pos.pieces(them, PAWN))
+                                                      : shift<SOUTH>(pos.pieces(them, PAWN));
+        int blockedEnemyPawns = popcount(enemyPawnPushTargets & pos.pieces());
+        stalemateBonus += blockedEnemyPawns * 45;
+
+        if (pos.checkers())
+            stalemateBonus -= 500;
+
+        if (materialLead > PawnValue * 4 && usPieces > themPieces)
+            stalemateBonus -= (usPieces - themPieces) * 25;
+
+        v += stalemateBonus;
+    }
 
     // Damp down the evaluation linearly when shuffling
     v -= v * pos.rule50_count() / 199;
@@ -112,7 +142,7 @@ std::string Eval::trace(Position& pos, const Eval::NNUE::Networks& networks) {
     v                       = pos.side_to_move() == WHITE ? v : -v;
     ss << "NNUE evaluation        " << 0.01 * UCIEngine::to_cp(v, pos) << " (white side)\n";
 
-    v = evaluate(networks, pos, *accumulators, *caches, VALUE_ZERO);
+    v = evaluate(networks, pos, *accumulators, *caches, VALUE_ZERO, false);
     v = pos.side_to_move() == WHITE ? v : -v;
     ss << "Final evaluation       " << 0.01 * UCIEngine::to_cp(v, pos) << " (white side)";
     ss << " [with scaled NNUE, ...]";

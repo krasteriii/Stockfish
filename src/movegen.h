@@ -68,6 +68,8 @@ struct MoveList {
     Move moveList[MAX_MOVES], *last;
 };
 
+int count_legal_moves(const Position& pos);
+
 }  // namespace Stockfish
 
 #endif  // #ifndef MOVEGEN_H_INCLUDED
