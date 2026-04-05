@@ -141,9 +141,9 @@ void update_all_stats(const Position& pos,
                       Depth           depth,
                       Move            ttMove);
 
-Value seek_stalemate_terminal_value(const Position& pos, const Position& rootPos) {
+Value seek_stalemate_terminal_value(const Position& pos, const Position& rootPos, int ply) {
     if (!pos.checkers() && pos.side_to_move() != rootPos.side_to_move())
-        return -VALUE_TB_WIN_IN_MAX_PLY;
+        return -mate_in(ply);  // Stalemate opponent: treat as equally rewarding as checkmate
 
     return VALUE_DRAW;
 }
@@ -1228,11 +1228,11 @@ moves_loop:  // When in check, search starts here
             opponentMoves = count_legal_moves(pos);
             // Scale bonus slightly higher at root (ply 0) where the choice matters most.
             int scale      = (ss->ply == 0) ? 2 : 1;
-            stalemateBonus = (20 - std::min(opponentMoves, 20)) * scale;
+            stalemateBonus = (20 - std::min(opponentMoves, 20)) * scale * 500;
 
             // Penalize check-giving moves — checks steer toward mate, not stalemate.
             if (givesCheck)
-                stalemateBonus -= 400;
+                stalemateBonus -= 2000;
         }
 
         // Add extension to new depth
@@ -1345,6 +1345,16 @@ moves_loop:  // When in check, search starts here
         undo_move(pos, move);
 
         assert(value > -VALUE_INFINITE && value < VALUE_INFINITE);
+
+        // In SeekStalemate mode, checkmating the opponent is undesirable — we want stalemate.
+        if (seekStalemate && value >= VALUE_MATE_IN_MAX_PLY)
+            value = VALUE_DRAW - 1000;
+
+        // In SeekStalemate mode, penalize queen/rook promotions: they increase opponent
+        // mobility and make stalemate harder to achieve.
+        if (seekStalemate && move.type_of() == PROMOTION
+            && (move.promotion_type() == QUEEN || move.promotion_type() == ROOK))
+            value -= 3000;
 
         if (seekStalemate && !is_decisive(value))
             value = std::clamp(value + stalemateBonus, VALUE_TB_LOSS_IN_MAX_PLY + 1,
@@ -1467,10 +1477,12 @@ moves_loop:  // When in check, search starts here
         bestValue = (bestValue * depth + beta) / (depth + 1);
 
     if (!moveCount)
-        bestValue = excludedMove                                    ? alpha
-                  : ss->inCheck                                    ? mated_in(ss->ply)
-                  : seekStalemate ? seek_stalemate_terminal_value(pos, rootPos)
-                                             : VALUE_DRAW;
+        bestValue = excludedMove ? alpha
+                  : (ss->inCheck && seekStalemate && pos.side_to_move() != rootPos.side_to_move())
+                                 ? (VALUE_DRAW - 1000)  // Checkmated opponent: bad in SeekStalemate
+                  : ss->inCheck  ? mated_in(ss->ply)
+                  : seekStalemate ? seek_stalemate_terminal_value(pos, rootPos, ss->ply)
+                                  : VALUE_DRAW;
 
     // If there is a move that produces search value greater than alpha,
     // we update the stats of searched moves.
@@ -1779,7 +1791,7 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
         {
             pos.state()->checkersBB = Rank1BB;  // search for legal king-moves only
             if (!MoveList<LEGAL>(pos).size())   // stalemate
-                bestValue = seekStalemate ? seek_stalemate_terminal_value(pos, rootPos)
+                bestValue = seekStalemate ? seek_stalemate_terminal_value(pos, rootPos, ss->ply)
                                                      : VALUE_DRAW;
             pos.state()->checkersBB = 0;
         }
