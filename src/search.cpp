@@ -175,6 +175,7 @@ Search::Worker::Worker(SharedState&                    sharedState,
     options(sharedState.options),
     threads(sharedState.threads),
     tt(sharedState.tt),
+    seekStalemate(false),
     networks(sharedState.networks),
     refreshTable(networks[token]) {
     clear();
@@ -190,6 +191,7 @@ void Search::Worker::start_searching() {
 
     accumulatorStack.reset();
     lastIterationPV.clear();
+    seekStalemate = options["SeekStalemate"];
 
     // Non-main threads go directly to iterative_deepening()
     if (!is_mainthread())
@@ -302,7 +304,7 @@ void Search::Worker::iterative_deepening() {
 
     if (mainThread)
     {
-        if (options["SeekStalemate"])
+        if (seekStalemate)
             sync_cout << "info string SeekStalemate mode active" << sync_endl;
 
         if (mainThread->bestPreviousScore == VALUE_INFINITE)
@@ -1213,7 +1215,7 @@ moves_loop:  // When in check, search starts here
         int stalemateBonus = 0;
         int opponentMoves  = -1;
 
-        if (options["SeekStalemate"] && rootNode)
+        if (seekStalemate && rootNode && moveCount == 1)
         {
             opponentMoves  = count_legal_moves(pos);
             stalemateBonus = 20 - std::min(opponentMoves, 20);
@@ -1330,11 +1332,11 @@ moves_loop:  // When in check, search starts here
 
         assert(value > -VALUE_INFINITE && value < VALUE_INFINITE);
 
-        if (options["SeekStalemate"] && !is_decisive(value))
+        if (seekStalemate && !is_decisive(value))
             value = std::clamp(value + stalemateBonus, VALUE_TB_LOSS_IN_MAX_PLY + 1,
                                VALUE_TB_WIN_IN_MAX_PLY - 1);
 
-        if (rootNode && is_mainthread() && options["SeekStalemate"] && moveCount == 1)
+        if (rootNode && is_mainthread() && seekStalemate && moveCount == 1)
             sync_cout << "info string Opponent legal moves: "
                       << (opponentMoves >= 0 ? std::to_string(opponentMoves) : "n/a") << sync_endl;
 
@@ -1454,7 +1456,7 @@ moves_loop:  // When in check, search starts here
     if (!moveCount)
         bestValue = excludedMove                                    ? alpha
                   : ss->inCheck                                    ? mated_in(ss->ply)
-                  : options["SeekStalemate"] ? seek_stalemate_terminal_value(pos, rootPos)
+                  : seekStalemate ? seek_stalemate_terminal_value(pos, rootPos)
                                              : VALUE_DRAW;
 
     // If there is a move that produces search value greater than alpha,
@@ -1764,7 +1766,7 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
         {
             pos.state()->checkersBB = Rank1BB;  // search for legal king-moves only
             if (!MoveList<LEGAL>(pos).size())   // stalemate
-                bestValue = options["SeekStalemate"] ? seek_stalemate_terminal_value(pos, rootPos)
+                bestValue = seekStalemate ? seek_stalemate_terminal_value(pos, rootPos)
                                                      : VALUE_DRAW;
             pos.state()->checkersBB = 0;
         }
@@ -1802,7 +1804,7 @@ TimePoint Search::Worker::elapsed_time() const { return main_manager()->tm.elaps
 
 Value Search::Worker::evaluate(const Position& pos) {
     return Eval::evaluate(networks[numaAccessToken], pos, accumulatorStack, refreshTable,
-                          optimism[pos.side_to_move()], options["SeekStalemate"]);
+                          optimism[pos.side_to_move()], seekStalemate);
 }
 
 namespace {
