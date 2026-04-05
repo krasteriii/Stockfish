@@ -37,6 +37,16 @@
 
 namespace Stockfish {
 
+namespace {
+
+int king_edge_distance(Square s) {
+    int fileDist = std::min(int(file_of(s)), int(FILE_H - file_of(s)));
+    int rankDist = std::min(int(rank_of(s)), int(RANK_8 - rank_of(s)));
+    return std::min(fileDist, rankDist);
+}
+
+}  // namespace
+
 // Returns a static, purely materialistic evaluation of the position from
 // the point of view of the side to move. It can be divided by PawnValue to get
 // an approximation of the material advantage on the board in terms of pawns.
@@ -54,7 +64,8 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
                      const Position&                pos,
                      Eval::NNUE::AccumulatorStack&  accumulators,
                      Eval::NNUE::AccumulatorCaches& caches,
-                     int                            optimism) {
+                     int                            optimism,
+                     bool                           seekStalemate) {
 
     assert(!pos.checkers());
 
@@ -79,6 +90,51 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
 
     int material = 534 * pos.count<PAWN>() + pos.non_pawn_material();
     int v        = (nnue * (77871 + material) + optimism * (7191 + material)) / 77871;
+
+    if (seekStalemate)
+    {
+        const Color us         = pos.side_to_move();
+        const Color them       = ~us;
+        const int   usPieces   = pos.count<ALL_PIECES>(us);
+        const int   themPieces = pos.count<ALL_PIECES>(them);
+        const int materialLead = PawnValue * (pos.count<PAWN>(us) - pos.count<PAWN>(them))
+                               + pos.non_pawn_material(us) - pos.non_pawn_material(them);
+
+        int stalemateBonus = 0;
+
+        Square enemyKing = pos.square<KING>(them);
+        int    edgeDist  = king_edge_distance(enemyKing);
+        // Reward forcing the enemy king to board edges/corners, where stalemate nets are easier.
+        stalemateBonus += (3 - std::min(edgeDist, 3)) * 90;
+
+        Bitboard enemyPawnPushTargets = them == WHITE ? shift<NORTH>(pos.pieces(them, PAWN))
+                                                      : shift<SOUTH>(pos.pieces(them, PAWN));
+        int blockedEnemyPawns = popcount(enemyPawnPushTargets & pos.pieces());
+        // Blocked enemy pawns reduce legal replies and increase stalemate likelihood.
+        stalemateBonus += blockedEnemyPawns * 45;
+
+        // Reward enemy non-pawn pieces whose pseudo-legal mobility is severely restricted.
+        // Using pseudo-legal moves (not full legal generation) is intentional: pins and
+        // king-safety constraints are a second-order effect at this heuristic level.
+        // Immobile pieces cannot escape a stalemate net.
+        for (PieceType pt : {KNIGHT, BISHOP, ROOK, QUEEN})
+        {
+            Bitboard pieces = pos.pieces(them, pt);
+            while (pieces)
+            {
+                Square   s     = pop_lsb(pieces);
+                Bitboard moves = attacks_bb(pt, s, pos.pieces()) & ~pos.pieces(them);
+                if (popcount(moves) <= 2)
+                    stalemateBonus += 35;
+            }
+        }
+
+        // With a large material lead, mildly discourage further piece liquidation.
+        if (materialLead > PawnValue * 4 && usPieces > themPieces)
+            stalemateBonus -= (usPieces - themPieces) * 25;
+
+        v += stalemateBonus;
+    }
 
     // Damp down the evaluation linearly when shuffling
     v -= v * pos.rule50_count() / 199;
@@ -112,7 +168,7 @@ std::string Eval::trace(Position& pos, const Eval::NNUE::Networks& networks) {
     v                       = pos.side_to_move() == WHITE ? v : -v;
     ss << "NNUE evaluation        " << 0.01 * UCIEngine::to_cp(v, pos) << " (white side)\n";
 
-    v = evaluate(networks, pos, *accumulators, *caches, VALUE_ZERO);
+    v = evaluate(networks, pos, *accumulators, *caches, VALUE_ZERO, false);
     v = pos.side_to_move() == WHITE ? v : -v;
     ss << "Final evaluation       " << 0.01 * UCIEngine::to_cp(v, pos) << " (white side)";
     ss << " [with scaled NNUE, ...]";

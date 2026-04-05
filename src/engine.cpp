@@ -129,6 +129,8 @@ Engine::Engine(std::optional<std::string> path) :
 
     options.add("Syzygy50MoveRule", Option(true));
 
+    options.add("SeekStalemate", Option(false));
+
     options.add("SyzygyProbeLimit", Option(7, 0, 7));
 
     options.add(  //

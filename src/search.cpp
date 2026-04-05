@@ -141,6 +141,13 @@ void update_all_stats(const Position& pos,
                       Depth           depth,
                       Move            ttMove);
 
+Value seek_stalemate_terminal_value(const Position& pos, const Position& rootPos) {
+    if (!pos.checkers() && pos.side_to_move() != rootPos.side_to_move())
+        return -VALUE_TB_WIN_IN_MAX_PLY;
+
+    return VALUE_DRAW;
+}
+
 bool is_shuffling(Move move, Stack* const ss, const Position& pos) {
     if (pos.capture_stage(move) || pos.rule50_count() < 11)
         return false;
@@ -168,6 +175,7 @@ Search::Worker::Worker(SharedState&                    sharedState,
     options(sharedState.options),
     threads(sharedState.threads),
     tt(sharedState.tt),
+    seekStalemate(false),
     networks(sharedState.networks),
     refreshTable(networks[token]) {
     clear();
@@ -183,6 +191,7 @@ void Search::Worker::start_searching() {
 
     accumulatorStack.reset();
     lastIterationPV.clear();
+    seekStalemate = options["SeekStalemate"];
 
     // Non-main threads go directly to iterative_deepening()
     if (!is_mainthread())
@@ -295,6 +304,9 @@ void Search::Worker::iterative_deepening() {
 
     if (mainThread)
     {
+        if (seekStalemate)
+            sync_cout << "info string SeekStalemate mode active" << sync_endl;
+
         if (mainThread->bestPreviousScore == VALUE_INFINITE)
             mainThread->iterValue.fill(VALUE_ZERO);
         else
@@ -372,6 +384,11 @@ void Search::Worker::iterative_deepening() {
                 // effective increment for every four searchAgain steps (see issue #2717).
                 Depth adjustedDepth =
                   std::max(1, rootDepth - failedHighCnt - 3 * (searchAgainCounter + 1) / 4);
+
+                // In SeekStalemate mode extend search in endgames to see stalemate deeper.
+                if (seekStalemate && rootPos.count<ALL_PIECES>() <= 8)
+                    adjustedDepth = std::min(adjustedDepth + 1, MAX_PLY - 1);
+
                 rootDelta = beta - alpha;
                 bestValue = search<Root>(rootPos, ss, alpha, beta, adjustedDepth, false);
 
@@ -1199,6 +1216,24 @@ moves_loop:  // When in check, search starts here
 
         // Step 16. Make the move
         do_move(pos, move, st, givesCheck, ss);
+        int stalemateBonus = 0;
+        int opponentMoves  = -1;
+
+        // In SeekStalemate mode, bias moves that restrict the opponent's mobility.
+        // Only count at engine-move plies (pos.side_to_move() == opponent of root) to
+        // avoid counting the wrong side's moves. Limit to ply <= 2 for performance.
+        if (seekStalemate && ss->ply <= 2
+            && pos.side_to_move() != rootPos.side_to_move())
+        {
+            opponentMoves = count_legal_moves(pos);
+            // Scale bonus slightly higher at root (ply 0) where the choice matters most.
+            int scale      = (ss->ply == 0) ? 2 : 1;
+            stalemateBonus = (20 - std::min(opponentMoves, 20)) * scale;
+
+            // Penalize check-giving moves — checks steer toward mate, not stalemate.
+            if (givesCheck)
+                stalemateBonus -= 400;
+        }
 
         // Add extension to new depth
         newDepth += extension;
@@ -1310,6 +1345,13 @@ moves_loop:  // When in check, search starts here
         undo_move(pos, move);
 
         assert(value > -VALUE_INFINITE && value < VALUE_INFINITE);
+
+        if (seekStalemate && !is_decisive(value))
+            value = std::clamp(value + stalemateBonus, VALUE_TB_LOSS_IN_MAX_PLY + 1,
+                               VALUE_TB_WIN_IN_MAX_PLY - 1);
+
+        if (rootNode && is_mainthread() && seekStalemate && moveCount == 1)
+            sync_cout << "info string Opponent legal moves: " << opponentMoves << sync_endl;
 
         // Step 20. Check for a new best move
         // Finished searching the move. If a stop occurred, the return value of
@@ -1425,7 +1467,10 @@ moves_loop:  // When in check, search starts here
         bestValue = (bestValue * depth + beta) / (depth + 1);
 
     if (!moveCount)
-        bestValue = excludedMove ? alpha : ss->inCheck ? mated_in(ss->ply) : VALUE_DRAW;
+        bestValue = excludedMove                                    ? alpha
+                  : ss->inCheck                                    ? mated_in(ss->ply)
+                  : seekStalemate ? seek_stalemate_terminal_value(pos, rootPos)
+                                             : VALUE_DRAW;
 
     // If there is a move that produces search value greater than alpha,
     // we update the stats of searched moves.
@@ -1734,7 +1779,8 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
         {
             pos.state()->checkersBB = Rank1BB;  // search for legal king-moves only
             if (!MoveList<LEGAL>(pos).size())   // stalemate
-                bestValue = VALUE_DRAW;
+                bestValue = seekStalemate ? seek_stalemate_terminal_value(pos, rootPos)
+                                                     : VALUE_DRAW;
             pos.state()->checkersBB = 0;
         }
     }
@@ -1771,7 +1817,7 @@ TimePoint Search::Worker::elapsed_time() const { return main_manager()->tm.elaps
 
 Value Search::Worker::evaluate(const Position& pos) {
     return Eval::evaluate(networks[numaAccessToken], pos, accumulatorStack, refreshTable,
-                          optimism[pos.side_to_move()]);
+                          optimism[pos.side_to_move()], seekStalemate);
 }
 
 namespace {

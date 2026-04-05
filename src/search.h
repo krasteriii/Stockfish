@@ -359,6 +359,7 @@ class Worker {
     const OptionsMap&                                         options;
     ThreadPool&                                               threads;
     TranspositionTable&                                       tt;
+    bool                                                      seekStalemate;
     const LazyNumaReplicatedSystemWide<Eval::NNUE::Networks>& networks;
 
     // Used by NNUE
