@@ -1350,10 +1350,8 @@ moves_loop:  // When in check, search starts here
             value = std::clamp(value + stalemateBonus, VALUE_TB_LOSS_IN_MAX_PLY + 1,
                                VALUE_TB_WIN_IN_MAX_PLY - 1);
 
-        if (rootNode && is_mainthread() && seekStalemate && opponentMoves >= 0
-            && moveCount == 1)
-            sync_cout << "info string Opponent legal moves: "
-                      << (opponentMoves >= 0 ? std::to_string(opponentMoves) : "n/a") << sync_endl;
+        if (rootNode && is_mainthread() && seekStalemate && moveCount == 1)
+            sync_cout << "info string Opponent legal moves: " << opponentMoves << sync_endl;
 
         // Step 20. Check for a new best move
         // Finished searching the move. If a stop occurred, the return value of

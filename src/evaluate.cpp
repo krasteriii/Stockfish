@@ -113,7 +113,9 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
         // Blocked enemy pawns reduce legal replies and increase stalemate likelihood.
         stalemateBonus += blockedEnemyPawns * 45;
 
-        // Reward enemy non-pawn pieces whose mobility is severely restricted.
+        // Reward enemy non-pawn pieces whose pseudo-legal mobility is severely restricted.
+        // Using pseudo-legal moves (not full legal generation) is intentional: pins and
+        // king-safety constraints are a second-order effect at this heuristic level.
         // Immobile pieces cannot escape a stalemate net.
         for (PieceType pt : {KNIGHT, BISHOP, ROOK, QUEEN})
         {
