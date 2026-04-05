@@ -1351,7 +1351,8 @@ moves_loop:  // When in check, search starts here
             value = VALUE_DRAW - 1000;
 
         // In SeekStalemate mode, penalize queen/rook promotions: they increase opponent
-        // mobility and make stalemate harder to achieve.
+        // mobility and make stalemate harder to achieve. The -3000 penalty is larger than
+        // the check penalty (-2000) since promotion permanently changes material balance.
         if (seekStalemate && move.type_of() == PROMOTION
             && (move.promotion_type() == QUEEN || move.promotion_type() == ROOK))
             value -= 3000;
@@ -1477,12 +1478,13 @@ moves_loop:  // When in check, search starts here
         bestValue = (bestValue * depth + beta) / (depth + 1);
 
     if (!moveCount)
-        bestValue = excludedMove ? alpha
-                  : (ss->inCheck && seekStalemate && pos.side_to_move() != rootPos.side_to_move())
-                                 ? (VALUE_DRAW - 1000)  // Checkmated opponent: bad in SeekStalemate
-                  : ss->inCheck  ? mated_in(ss->ply)
-                  : seekStalemate ? seek_stalemate_terminal_value(pos, rootPos, ss->ply)
-                                  : VALUE_DRAW;
+        bestValue =
+          excludedMove ? alpha
+          : (ss->inCheck && seekStalemate && pos.side_to_move() != rootPos.side_to_move())
+            ? (VALUE_DRAW - 1000)  // Checkmated opponent: bad in SeekStalemate
+          : ss->inCheck   ? mated_in(ss->ply)
+          : seekStalemate ? seek_stalemate_terminal_value(pos, rootPos, ss->ply)
+                          : VALUE_DRAW;
 
     // If there is a move that produces search value greater than alpha,
     // we update the stats of searched moves.
